@@ -64,7 +64,7 @@ struct material {
 
     vec3f ke = {0, 0, 0};           // emission color
     vec3f kd = {0.5, 0.5, 0.5};     // diffuse color
-    vec3f ks = {0.04, 0.04, 0.04};  // specular color
+    vec3f ks = {0.04f, 0.04f, 0.04f};  // specular color
     float rs = 0;                   // specular roughness
     vec3f kr = {0, 0, 0};           // reflection color
 
