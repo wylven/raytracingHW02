@@ -7,9 +7,10 @@ ray3f eval_camera(const camera* cam, const vec2f& uv) {
 	auto h = 2 * tan(cam->fovy / 2);
 	auto w = h * cam->aspect;
 	auto origin = cam->frame.o;
-	auto direction = cam->frame.x * w * (uv.x - 0.5f) + cam->frame.y * h * (uv.y - 0.5f) - cam->frame.z * cam->focus;
-	auto length = sqrt(direction.x*direction.x + direction.y*direction.y + direction.z*direction.z);
-	return ray3f{ origin, direction / length };
+	auto direction = origin + (cam->frame.x * w * (uv.x - 0.5f)) + (cam->frame.y * h * (uv.y - 0.5f)) - cam->frame.z;
+	auto direction2 = direction - origin;
+	auto length = sqrt(direction2.x*direction2.x + direction2.y*direction2.y + direction2.z*direction2.z);
+	return ray3f{ origin, direction2 / length };
 }
 
 vec3f lookup_texture(const texture* txt, int i, int j, bool srgb) {
@@ -26,7 +27,7 @@ vec3f lookup_texture(const texture* txt, int i, int j, bool srgb) {
 
 vec3f eval_texture(const texture* txt, const vec2f& texcoord, bool srgb) {
     // IL TUO CODICE VA QUI
-
+	if (!txt) { return { 1, 1, 1 }; }
 	auto s = fmod(texcoord.x, 1.f) * txt->ldr.width;
 	auto t = fmod(texcoord.y, 1.f) * txt->ldr.height;
 	if (s < 0) { s = txt->ldr.width; }
@@ -41,14 +42,14 @@ vec3f eval_texture(const texture* txt, const vec2f& texcoord, bool srgb) {
 	auto pixeli2j = lookup_texture(txt, (int)i2, (int)j, true) * wi * (1.f - wj);
 	auto pixelij2 = lookup_texture(txt, (int)i, (int)j2, true) * wj * (1.f - wi);
 	auto pixeli2j2 = lookup_texture(txt, (int)i2, (int)j2, true) * wi * wj;
-	
+
 	return pixelij + pixeli2j + pixelij2 + pixeli2j2;
 }
 
 vec4f shade(const scene* scn, const std::vector<instance*>& lights,
     const vec3f& amb, const ray3f& ray) {
 
-	if (!intersect_any(scn, ray)) { return { 0, 0, 0, 0 }; }
+	if (!intersect_any(scn, ray)) { return vec4f{ 0, 0, 0, 0 }; }
 	auto inter = intersect_first(scn, ray);
 	auto instance = inter.ist;
 	auto shape = instance->shp;
@@ -57,8 +58,8 @@ vec4f shade(const scene* scn, const std::vector<instance*>& lights,
 	auto position = eval_pos(shape, inter.ei, inter.ew);
 	auto normal = eval_norm(shape, inter.ei, inter.ew);
 	auto texcoord = eval_texcoord(shape, inter.ei, inter.ew);
-	auto texture = eval_texture(material->kd_txt, texcoord, true);
-	auto colour = vec4f{ 0,0,0,0 };//kd.x, kd.y, kd.z, 1.f };
+	auto kd = material->kd * eval_texture(material->kd_txt, texcoord, true);
+	auto colour = vec4f{ kd.x, kd.y, kd.z, 1.f };
 	return colour;
 }
 
