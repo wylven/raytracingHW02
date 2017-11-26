@@ -7,10 +7,9 @@ ray3f eval_camera(const camera* cam, const vec2f& uv) {
 	auto h = 2 * tan(cam->fovy / 2);
 	auto w = h * cam->aspect;
 	auto origin = cam->frame.o;
-	auto direction = origin + (cam->frame.x * w * (uv.x - 0.5f)) + (cam->frame.y * h * (uv.y - 0.5f)) - cam->frame.z;
-	auto direction2 = direction - origin;
-	auto length = sqrt(direction2.x*direction2.x + direction2.y*direction2.y + direction2.z*direction2.z);
-	return ray3f{ origin, direction2 / length };
+	auto direction = origin + (cam->frame.x * w * (uv.x - 0.5f)) + (cam->frame.y * h * (1 - uv.y - 0.5f)) - cam->frame.z;
+	auto l = length(direction - origin);
+	return ray3f{ origin, (direction - origin) / l };
 }
 
 vec3f lookup_texture(const texture* txt, int i, int j, bool srgb) {
@@ -18,9 +17,9 @@ vec3f lookup_texture(const texture* txt, int i, int j, bool srgb) {
 	auto texcoordf = vec3f{ txtcord.x / 255.0f, txtcord.y / 255.0f, txtcord.z / 255.0f };
 	if (srgb)
 	{
-		texcoordf.x = pow(texcoordf.x, 1 / 2.2f);
-		texcoordf.y = pow(texcoordf.y, 1 / 2.2f);
-		texcoordf.z = pow(texcoordf.z, 1 / 2.2f);
+		texcoordf.x = pow(texcoordf.x, 2.2f);
+		texcoordf.y = pow(texcoordf.y, 2.2f);
+		texcoordf.z = pow(texcoordf.z, 2.2f);
 	}
 	return texcoordf;
 }
@@ -54,13 +53,57 @@ vec4f shade(const scene* scn, const std::vector<instance*>& lights,
 	auto instance = inter.ist;
 	auto shape = instance->shp;
 	auto material = instance->mat;
+	auto position = vec3f{ 0,0,0 };
+	auto norm = vec3f{ 0,0,0 };
+	auto texcoord = vec2f{ 0,0 };
 
-	auto position = eval_pos(shape, inter.ei, inter.ew);
-	auto normal = eval_norm(shape, inter.ei, inter.ew);
-	auto texcoord = eval_texcoord(shape, inter.ei, inter.ew);
+	position = eval_pos(shape, inter.ei, inter.ew);
+	norm = eval_norm(shape, inter.ei, inter.ew);
+	texcoord = eval_texcoord(shape, inter.ei, inter.ew);
+	position = transform_point(instance->frame, position);
+	norm = transform_direction(instance->frame, norm);
+
+	auto ke = material->ke * eval_texture(material->ke_txt, texcoord, true);
 	auto kd = material->kd * eval_texture(material->kd_txt, texcoord, true);
-	auto colour = vec4f{ kd.x, kd.y, kd.z, 1.f };
-	return colour;
+	auto ks = material->ks * eval_texture(material->ks_txt, texcoord, true);
+	auto kr = material->kr * eval_texture(material->kr_txt, texcoord, true);
+	auto ns = (material->rs) ? 2 / pow(material->rs, 4.0f) - 2 : 1e6f;
+	auto color = ke + kd * amb;
+
+	for (auto light : lights)
+	{
+
+		if (light->mat->ke.x <= 0.0 && light->mat->ke.y <= 0.0 && light->mat->ke.z <= 0.0) { continue; }
+		auto light_pos = transform_point(light->frame, light->shp->pos.front());
+		auto l = normalize(light_pos - position);
+		auto len = length(light_pos - position);
+		auto sr = ray3f{ position, l, 0.01f, len - 0.01f };
+		if (intersect_any(scn, sr)) { continue; }
+
+		auto light_I = light->mat->ke / (len * len);
+		auto wo = -ray.d;
+		auto wh = normalize(l + wo);
+		
+		if (!shape->triangles.empty())
+		{
+			auto diff = light_I * kd * max(0.f, dot(norm, l));
+			auto blinn = light_I * ks * powf(max(0.f, dot(norm, wh)), ns);
+			color += diff + blinn;
+		}
+		else if (!shape->lines.empty())
+		{
+			color += (light_I * kd * sqrt(clamp(1 - dot(norm, l) * dot(norm, l), 0.0f, 1.f))) +
+				(light_I * ks * pow(sqrt(clamp(1 - dot(norm, wh) * dot(norm, wh), 0.f, 1.f)), ns));
+		}
+	}
+	if (kr != vec3f{ 0,0,0 })
+	{
+		auto v = ray.o - position;
+		auto refray = ray3f{ position, normalize(norm * 2 * dot(v, norm) - v) };
+		auto ref = shade(scn, lights, amb, refray);
+		color += kr * vec3f{ref.x, ref.y, ref.z};
+	}
+	return vec4f{ color.x, color.y, color.z, 1.f };
 }
 
 image4f raytrace(
@@ -68,13 +111,32 @@ image4f raytrace(
     auto cam = scn->cameras.front();
     auto img = image4f((int)std::round(cam->aspect * resolution), resolution);
 
+	auto lights = std::vector<instance*>();
+	for (auto ist : scn->instances)
+	{
+		if (ist->mat->ke == vec3f{ 0, 0, 0 }) continue;
+		if (ist->shp->points.empty()) continue;
+		lights.push_back(ist);
+	}
 	for (int j = 0; j < img.height; ++j)
 	{
 		for (int i = 0; i < img.width; ++i)
 		{
-			auto uv = vec2f{(float)i / img.width, (float)j / img.height};
-			auto ray = eval_camera(cam, uv);
-			img.at(i, j) = shade(scn, scn->instances, amb, ray);
+			img.at(i, j) = vec4f{ 0,0,0,0 };
+			for (auto sj = 0; sj < samples; ++sj)
+			{
+				for (auto si = 0; si < samples; ++si)
+				{
+					auto u = (i + (si + 0.5f) / samples) / img.width;
+					auto v = (j + (sj + 0.5f) / samples) / img.height;
+					auto ray = eval_camera(cam, { u,v });
+					img.at(i, j) += shade(scn, lights, amb, ray);
+				}
+			}
+			auto pixel = img.at(i, j);
+			auto ns = samples * samples;
+			pixel = vec4f{ pixel.x / ns, pixel.y / ns, pixel.z / ns, pixel.w };
+			img.at(i, j) = pixel;
 		}
 	}
     return img;
